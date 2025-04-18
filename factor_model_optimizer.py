@@ -1,9 +1,36 @@
 # coding: utf-8
-import numpy as np, pandas as pd, os, matplotlib.pyplot as plt,scipy as scp
+import numpy as np, pandas as pd, os, matplotlib.pyplot as plt, scipy as scp
 
 import seaborn as sns, cvxpy as cp
 
 svd = np.linalg.svd
+
+class BetaLO(object):
+
+    @staticmethod
+    def get_betaLO_(lbda,beta,delta): # beta long-only
+        sigmainv = Factor_Model.woodbury_fm(delta,beta,lbda)
+        return lbda@beta.T@sigmainv@np.ones(len(beta))
+    
+    @staticmethod
+    def get_betaLO__(lbda,beta,delta): # beta long-only
+        return np.linalg.inv()
+
+    def __init__(self,fmdict):
+        self.__dict__.update(fmdict)
+
+    def get_betaLO(self):
+        return self.get_betaLO_(self.lbda,self.evecs,self.diagerrors)
+
+class Optimizer(object):
+
+    def __init__(self,fmdict,constraints):
+        self.__dict__.update(fmdict)
+        self.constraints = constraints
+
+    def optimize(self):
+        return self.get_betaLO_(self.lbda,self.evecs,self.diagerrors)
+
 
 class Factor_Model(object):
 
@@ -19,8 +46,22 @@ class Factor_Model(object):
        
        
        @staticmethod
-       def get_inv(lbd,diag): 
-           return [np.diag(1/np.diag(e)) for e in (lbd,diag)]
+       def get_inv(*args): 
+           return [np.diag(1/np.diag(e)) for e in args]
+       
+       @staticmethod
+       def woodbury_fm(A,beta,C): # computes inverse of Omega = A + UCV
+           # specialized to C,A both diagonal for factor models,
+           # C = diagonal factor covariance aka Lambda,
+           # A = diagonal errors aka Delta, U = beta and V = beta.T,
+           # so A + UCV = beta@Lambda@beta.T + Delta and the weights
+           # = w \propto 
+           # Omega^{-1}@1, where Omega^{-1} =
+           # Ainv@(IdentityMatrix - beta@(Cinv + beta.T@Ainv@beta)^{-1}beta.T@Ainv)
+           # with a denominator of 1^T@Omega^{-1}@1 (over 2 unless the quadratic term
+           # equals 1/2w.T@Omega@w)
+           Cinv,Ainv = Factor_Model.get_inv(C,A)
+           return Ainv - Ainv@beta@np.linalg.inv(Cinv + beta.T@Ainv@beta)@beta.T@Ainv
        
        @classmethod
        def from_price(kls,price_series,annualize=False):
@@ -47,9 +88,13 @@ class Factor_Model(object):
            return dict(zip('mapprox,lbda,lowrank,diagerrors,evals,evecs'.split(','),return_values)) if return_dict else return_values
 
 class Minvar(object):
+       
+       @classmethod
+       def from_fm(kls,n,fmdict,m=2):
+           return kls(n,m,**{k1:fmdict[k] for k1,k in zip('lbda diag evecs'.split(),'lbda diagerrors evecs'.split())})
 
-       def __init__(self,n,m=2,lbda=None,diag=None,evecs=None):
-           self.n,self.m = n,m
+       def __init__(self,n=None,m=2,lbda=None,diag=None,evecs=None):
+           self.n,self.m = n,m if evecs is None else evecs.shape
            self.w, self.f = [cp.Variable(i) for i in (n,m)]
            self.lbda,self.diag,self.F = lbda,diag,evecs
            if self.lbda is None and evecs: self.lbda = np.eye(evecs.shape[1])
@@ -59,6 +104,7 @@ class Minvar(object):
            # self.make_risk()
            
        def make_risk(self):
+        #    self.risk = cp.quad_form(self.f,self.lbda) + cp.sum_squares(np.sqrt(self.diag)@self.w)
            self.risk = cp.quad_form(self.f,self.lbda) + cp.sum_squares(np.sqrt(self.diag)@self.w)
 
        def make_prob_factor(self):
@@ -74,8 +120,9 @@ class Minvar(object):
            return self.w.value
            
 
-       def update(self,lbda,diag,evecs):
-           self.lbda,self.diag,self.F = lbda,diag,evecs
+       def update(self,update_dict):
+        #    self.lbda,self.diag,self.F = lbda,diag,evecs
+           self.__dict__.update(update_dict)
            self.make_risk()
            self.make_prob_factor()
            self.prob_factor.solve()
@@ -84,3 +131,13 @@ class Minvar(object):
 
        def get_mv_index(self,tolerance = 1e-4):
            return np.where(self.w.value>tolerance)[0]
+       
+def subarray(idx, array):
+    shp = array.shape
+    print(shp)
+    mx = max(shp)
+    index_arrays = [widx[0] if k == mx else np.arange(k) for k in shp]
+    print(index_arrays)
+    midx = np.ix_(*index_arrays)#[:,:,0]
+    print('midx',midx,'end midx')
+    return array[midx]
