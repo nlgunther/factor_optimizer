@@ -5,6 +5,8 @@ import seaborn as sns, cvxpy as cp
 
 svd = np.linalg.svd
 
+corner = lambda lim,ar: ar[*[slice(None,lim) for _ in range(len(ar.shape))]] # utility display method
+
 class BetaLO(object):
 
     @staticmethod
@@ -71,10 +73,10 @@ class Factor_Model(object):
         def from_price(kls,price_series,annualize=False):
             return kls(kls.get_returns(price_series,annualize),annualize)
         
-        def __init__(self,returns,annualize=False):
+        def __init__(self,returns=None, cov = None, annualize=False):
             self.returns = returns
-            self.numtickers = len(returns.columns)
-            self.cov = returns.cov()
+            self.cov = returns.cov() if cov is None else cov
+            self.numtickers = len(self.cov)
             self.annualize = annualize
 
         def get_lowrank_sparse(self,eigenvector_indices,return_dict = False):
@@ -146,16 +148,25 @@ def subarray(idx, array):
     print('midx',midx,'end midx')
     return array[midx]
 
-def get_graph_params(df,round=None):
-    fm= Factor_Model(df)
-    twofactor_ = fm.get_lowrank_sparse((fm.numtickers-2,fm.numtickers-1),True)
+def set_eigenvectors(num: int,fm: Factor_Model):
+    '''
+    Set the number of eigenvectors to be returned.
+    '''
+    assert num > 0, 'num must be greater than 0'
+    evecs = [fm.numtickers + i for i in range(-num,0)]
+    if num == 1:evecs.append(fm.numtickers-1)
+    return evecs
+
+def get_graph_params(df=None,num_factors=2,fm=None):
+    if fm is None: fm= Factor_Model(df)
+    factormodel = fm.get_lowrank_sparse(set_eigenvectors(num_factors,fm),True)
     # onefactor_ = fm.get_lowrank_sparse([fm.numtickers-1,fm.numtickers-1],True)
-    lbda,evecs,diagerrors = [twofactor_[k] for k in 'lbda evecs diagerrors'.split()]
+    lbda,evecs,diagerrors = [factormodel[k] for k in 'lbda evecs diagerrors'.split()]
     evecs = -evecs
     w = cp.Variable(evecs.shape[0])
     risk = cp.quad_form(w, evecs@lbda@evecs.T) +  cp.sum_squares(Factor_Model.diagf(diagerrors,np.sqrt)@w)
     prob = cp.Problem(cp.Minimize(risk), [cp.sum(w) == 1, w>=0])
-    prob.solve()
+    minv = prob.solve()
     staridx = Factor_Model.get_where(w.value,5)
     # staridx = FM.get_where(w.value,round2=4,test=lambda x: x > 1e-3)
     # notstaridx = np.delete(np.arange(len(evecs)),staridx)
@@ -167,23 +178,27 @@ def get_graph_params(df,round=None):
     betalo = BetaLO({'evecs':evecstar,'lbda':lbda,'diagerrors':diagstar})
     (blo := betalo.get_betaLO())
     return {'blo':blo,'staridx':staridx,'evecs':evecs,'diagerrors':diagerrors,'lbda':lbda,'w':w.value,'risk':risk.value,
-            'evecstar':evecstar,'diagstar':diagstar}
+            'evecstar':evecstar,'diagstar':diagstar,'minv':minv}
 
 def get_other(x,n): return (1 - x*n[0])/n[1] # n.dot((x,get_other(x))) =1 so with n as normal, (x,y) is on line n.dot(p) = 1
 
-def make_graph(evecs,staridx,blo,portfolio_description='Specified'): # full evecs, staridx,
+def make_graph(evecs,staridx,blo,title): # full evecs, staridx,
     # integer num is converted to a string=
     # num = '%i Stock' % evecs.shape[0] if num is None else num
     fig,ax = plt.subplots(1,1,figsize=(15,8))
-    df = pd.DataFrame(evecs,columns="Eigenvector_2 Eigenvector_1".split()).reset_index(names='point')
+    df = pd.DataFrame(evecs,columns="market factor;second factor".split(';')).reset_index(names='point')
     df = df.assign(LongOnly=df.point.apply(lambda p: 'In LO' if p in staridx else 'Not in LO'))
-    sns.scatterplot(df,x = "Eigenvector_2", y = "Eigenvector_1", hue = 'LongOnly', ax = ax)
+    sns.scatterplot(df,x = "market factor", y = "second factor", hue = 'LongOnly', ax = ax)
     
     xlims,ylims = [getattr(ax,k)() for k in ('get_'+s for s in 'xlim ylim'.split())]
-    ys = [get_other(e,blo) for e in xlims]
-    ax.plot(xlims,ys,c='red')
+    Xys = [(x,get_other(x,blo)) for x in xlims]
+    xYs = [(get_other(y,np.flip(blo)),y) for y in ylims]
+    xys = Xys + xYs
+    xys = [(x,y) for x,y in xys if xlims[0] <= x <= xlims[1] and ylims[0] <= y <= ylims[1]]
+    xsgraph,ysgraph = zip(*xys)
+    ax.plot(xsgraph,ysgraph,c='red')
     ax.grid(True)
-    ax.set_title(r'$\beta$s' +' in (Orange) and out (Blue) of MVLO' +' for %s Portfolio with Separating 2-Factor Line (Solid Red)\n   and Separating 1-Factor Line (Dotted Red)' % portfolio_description)
+    ax.set_title(title)
     # for row in model.iloc[:,:2].iterrows():
     #     ax.annotate(shorten_variable_name(tickerdict[row[0]]),row[1])
     ax.set_aspect('equal')
